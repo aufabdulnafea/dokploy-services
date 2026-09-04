@@ -1,0 +1,61 @@
+services:
+  open-design:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: open-design-claude:local
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+
+      # Daemon heap only. Claude Code runs as a separate process outside this
+      # cap, so do not treat it as the container's memory budget.
+      NODE_OPTIONS: --max-old-space-size=384
+
+      OD_BIND_HOST: 0.0.0.0
+      OD_PORT: 7456
+      OD_API_TOKEN: ${OD_API_TOKEN}
+      OD_ALLOWED_ORIGINS: ${OD_ALLOWED_ORIGINS}
+
+      # Leave this UNSET unless Cloudflare Access (or equivalent) authenticates
+      # every request in front of the tunnel. Disabling it makes the daemon --
+      # and the coding agent behind it -- open to anyone with the URL.
+      # OD_DISABLE_API_AUTH: "1"
+
+      HOME: /opt/agent
+      PATH: /opt/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+      # Deliberately absent: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN.
+      # Either one silently overrides the subscription credentials and bills
+      # your API account instead of your plan.
+
+    volumes:
+      - open_design_data:/app/.od
+      # Must be writable: Claude Code rewrites .credentials.json on token refresh.
+      - claude_auth:/opt/agent/.claude
+
+    # Claude Code needs real headroom. 384m will OOM-kill it mid-run.
+    mem_limit: 3g
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7456/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    # Join the shared cloudflared network so the tunnel can route to this
+    # container by name. Drop this block and add a ports: mapping instead if
+    # you are reaching it some other way.
+    networks:
+      - cloudflared
+
+volumes:
+  open_design_data: {}
+  claude_auth: {}
+
+networks:
+  cloudflared:
+    external: true
+    name: ${CLOUDFLARED_NETWORK}

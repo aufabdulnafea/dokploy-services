@@ -1,0 +1,114 @@
+# Open Design + Claude Code on a subscription
+
+Open Design doesn't call the Anthropic API itself — it shells out to whatever
+agent CLI it finds in `PATH`. So if the `claude` binary inside the container is
+logged in with your Claude subscription, the work draws on your plan's usage
+allowance and no API key is involved.
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `Dockerfile` | Adds Claude Code + glibc shim on top of `ghcr.io/nexu-io/od:latest` |
+| `docker-compose.yml` | The stack |
+| `.env.example` | Template — copy to `.env`, or paste into Dokploy's Environment tab |
+
+## Setup
+
+**1. Generate the API token**
+
+```bash
+openssl rand -hex 32
+```
+
+Put it in `OD_API_TOKEN`. Set `OD_ALLOWED_ORIGINS` to the exact HTTPS origin
+you'll load in the browser, and `CLOUDFLARED_NETWORK` to your shared
+cloudflared network name.
+
+**2. Build and start**
+
+```bash
+docker compose up -d --build
+```
+
+If the `ghcr.io/nexu-io/od` package is private, the pull fails with
+`unauthorized` — this has been an ongoing issue upstream. Clone the repo and
+build from `deploy/Dockerfile` yourself, then change the `FROM` line to point at
+your local tag.
+
+**3. Log Claude Code in — once**
+
+```bash
+docker compose exec -it open-design claude
+```
+
+Run `/login` and follow the flow. It prints a URL; open it in your own browser,
+authorize, and paste the code back into the terminal. Then `/exit`.
+
+Verify:
+
+```bash
+docker compose exec open-design claude --version
+docker compose exec open-design cat /opt/agent/.claude/.credentials.json | head -c 40
+```
+
+Credentials live in the `claude_auth` volume, so restarts and image rebuilds
+keep the login. `docker compose down -v` wipes it and you log in again.
+
+**4. Restart so the daemon re-detects the CLI**
+
+```bash
+docker compose restart
+```
+
+The daemon scans `PATH` at startup only. If you log in without restarting, the
+UI may show no available agents.
+
+## Before you expose it
+
+The stack leaves `OD_DISABLE_API_AUTH` commented out on purpose. Upstream says
+to use it only where a proxy already authenticates every request and direct
+access to the daemon stays blocked. A plain Cloudflare Tunnel routes traffic
+but authenticates nobody.
+
+You now have a container that runs a coding agent with filesystem access,
+signed in to your account. Put **Cloudflare Access** on the hostname before
+opening it up. With Access in front, uncomment `OD_DISABLE_API_AUTH: "1"` so
+the browser UI loads without a Basic-auth prompt. Without it, leave the flag
+off and authenticate with username `open-design` and the `OD_API_TOKEN` value
+as the password.
+
+## Things that go wrong
+
+**`API_TOKEN_REQUIRED` in the browser console.** The daemon only skips the
+token for requests from 127.0.0.1. Anything through a proxy arrives from the
+proxy's IP. Either have the proxy inject `Authorization: Bearer <OD_API_TOKEN>`,
+or use the Basic-auth prompt, or gate with Access and set
+`OD_DISABLE_API_AUTH`.
+
+**Agent runs die silently.** Almost always the memory cap. `mem_limit: 3g` is
+the floor here; upstream's 384m default is sized for the daemon alone.
+
+**Usage bills to your API account anyway.** Check that neither
+`ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` leaked into the container
+env — a stale `CLAUDE_CODE_OAUTH_TOKEN` silently wins over the credentials
+file, and it isn't in the documented precedence list. Confirm with
+`docker compose exec open-design env | grep -iE 'anthropic|claude'`.
+
+**`symbol not found` / relocation errors from `claude`.** `libc6-compat` covers
+most of it, but a stubborn binary may need full glibc. Mount it read-only from
+the host — `/lib/x86_64-linux-gnu` and `/lib64` on amd64,
+`/lib/aarch64-linux-gnu` on arm64.
+
+**Ownership errors on the data volume.** The container runs as uid 1001. If the
+volume was created by an earlier install running as a different user:
+
+```bash
+docker run --rm -v open-design_open_design_data:/data alpine chown -R 1001:1001 /data
+```
+
+## Note on usage
+
+Everything Open Design does now counts against your plan's rolling 5-hour and
+weekly windows, shared with claude.ai and any other Claude Code you run. Design
+generation is token-heavy. `/usage` inside the container shows where it's going.
