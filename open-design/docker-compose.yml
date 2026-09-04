@@ -48,14 +48,14 @@ services:
     # Join the shared cloudflared network so the tunnel can route to this
     # container by name. Drop this block and add a ports: mapping instead if
     # you are reaching it some other way.
-    networks:
-      - cloudflared
+    # networks:
+    #   - cloudflared
 
 volumes:
   open_design_data: {}
   claude_auth: {}
 
-networks:
-  cloudflared:
-    external: true
-    name: ${CLOUDFLARED_NETWORK}
+# networks:
+#   cloudflared:
+#     external: true
+#     name: ${CLOUDFLARED_NETWORK}
